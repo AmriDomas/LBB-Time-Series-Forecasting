@@ -1,0 +1,424 @@
+---
+title: "LBB Time Series & Forecasting"
+author: "Muh Amri Sidiq"
+date: "`r Sys.Date()`"
+output:  
+  html_document:
+    theme: "journal"
+    highlight: espresso
+    toc: true
+    toc_float:
+      collapsed: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# clear-up the environment
+rm(list = ls())
+
+# chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  comment = "#>"
+)
+
+options(scipen = 999)
+```
+
+
+# Introduction
+
+New Zealand disebut sebagai salah satu negara yang mengutamakan gaya hidup sehat. Hal ini lantaran warga negara ini sangat suka mengutamakan konsumsi makanan bernutrisi, olahraga fisik, dan meditasi. Melansir dari laman New Zealand, negara ini memiliki ragam sejarah yang merupakan perpaduan dari orang Maori, Eropa, Pulau Pasifik, hingga Asia. Perpaduan budaya yang kaya ini, masih ditambah dengan lanskap geologis yang mempesona, serta flora dan faunanya yang unik. Dengan alasan tersebut selandia baru menjadi salah satu tujuan favorit imigran di seluruh dunia. permasalahan yang akan kita selesaikan adalah untuk meramalkan/ memprediksi jumlah imigrasi selama 1 tahun ke depan. Library yang kita butuhkan antara lain:
+
+```{r}
+library(dplyr) 
+library(lubridate) 
+library(padr) 
+library(zoo)
+library(forecast) 
+library(TTR)
+library(MLmetrics) 
+library(tseries) 
+library(fpp) 
+library(TSstudio) 
+library(ggplot2)
+library(tidyr)
+```
+
+# Read Data + Data understanding
+
+Kita akan menggunakan data migration di selandia baru dengan nama international-migration-March-2023-estimated-migration-by-age-sex.csv. Dari data migration ini, kita akan menggunakan 2 kolom yang kita butuhkan yaitu year_month dan estimate
+
+```{r}
+migration <- read.csv("international-migration-March-2023-estimated-migration-by-age-sex.csv")
+head(migration)
+```
+
+Dari data di atas berikut penjelasannya:
+
+ - year_month           : tahun dan bulan migration 
+ - month_of_release     : Tahun terbit
+ - Passanger_type       : jenis imigrasi
+ - direction            : arah migrasi
+ - sex                  : Gender
+ - age                  : umur
+ - estimati             : jumlah imigrasi
+ - standard_eror        : standard eror
+ - status               : final
+
+
+# Data Wrangling
+
+Pada tahapan ini kita akan memeriksa dan menyesuaikan apakah data yang kita miliki sudah memenuhi karakteristik data time series. Di tahap ini kita akan memilih data untuk sex kita pilih total, untuk ege kita pilih total dan direction kita pilih arrivals. beberapa kolom yang kita hapus seperti month_of_release, passanger_type, standard_eror, status, direction, sex dan age.
+
+```{r}
+migration_clean <- migration %>%
+  filter(sex == "TOTAL" & age == "TOTAL" & direction == "Arrivals") %>% 
+  mutate(year_month = ym(year_month)) %>% 
+  select(-month_of_release,
+         -passenger_type,
+         -standard_error,
+         -status,
+         -direction,
+         -sex,
+         -age) %>% 
+  arrange(year_month)
+
+all(seq.Date(from = min(migration_clean$year_month), to = max(migration_clean$year_month), by = "month")==migration_clean$year_month)
+
+anyNA(migration_clean)
+
+```
+
+Dari tahap di atas dapat kita simpulkan tidak ada data time series yang terlewat dan tidak adanya data missing values.
+
+dengan data di atas kita akan membuat time series untuk 1 tahun
+
+```{r}
+migration_ts <- ts(data = migration_clean$estimate,
+               start = c(2001,1),
+               frequency = 12
+               )
+```
+
+# EDA
+
+## Visualisasi 
+Setelah kita membuat time series migration, bis akita lihat plot time series di bawah ini:
+
+```{r}
+autoplot(migration_ts)
+```
+
+Insight: Dari data di atas bisa kita lihat data fluktuatif trend cenderung mengalami kenaikan meskipun di tahun 2020 mengalami penurunan akibat pendemi covid-19
+
+## Decomposition
+
+Decomposition adalah tahapan dalam time series analisis yang digunakan untuk menguraikan beberapa komponen dalam time series data. Komponen/unsur dalam time series:
+
+  - Trend (Tt) : pola data secara general, cenderung untuk naik atau turun.
+  - Seasonal (St): pola musiman yang membentuk pola berulang pada periode waktu yang tetap
+  - Error/Reminder/Random (Et): pola yang tidak dapat ditangkap dalam trend dan seasonal
+
+Untuk dapat menguraikan object time series kita menjadi 3 komponen tersebut, kita dapat menggunakan fungsi decompose().
+
+```{r}
+migration_decom <- decompose(migration_ts)
+```
+
+Memvisualisasikan hasil decompose menggunakan autoplot().
+
+```{r}
+migration_decom %>% autoplot()
+```
+
+Pada hasil decompose kita mendapatkan informasi visualisasi:
+
+ - Data : pola data asli
+ - Seasonal (S) : terdapat seasonal
+ - Trend (T) : pola data secara global (naik atau turun)
+ - Remainder (E) : pola data yang tidak dapat ditangkap oleh seasonal dan trend
+
+# Cross Validation
+
+Tahapan cross validation baik akan selalu dilakukan sebelum pembuatan model, data akan dibagi menjadi data train dan data test. Khusus untuk data deret waktu pembagian data tidak boleh diambil secara acak melainkan dibagi dengan cara dipisah secara berurutan. Pada data migration_ts kita ketahui bahwa pola yang diamati (seasonal) adalah tahunan, maka kita akan mengambil data test sebanyak satu season yakni 12 data terakhir.
+
+```{r}
+migration_test <- tail(migration_ts,12)
+  
+#membuat data train
+migration_train <- head(migration_ts,-12)
+```
+
+# Build Model
+
+## Holtwinters
+
+Karena data kita memiliki trend dan seasonal, model pertama yang cocok adalah Holt’s Winters Exponential (Triple Exponential Smoothing), dimana data kita termasuk aditive
+
+```{r}
+model_hw <- HoltWinters(migration_train,
+                        seasonal = "additive",
+                        alpha = 0.08,
+                        beta = 0.7,
+                        gamma = 0,09)
+```
+
+## ARIMA
+
+ARIMA adalah gabungan antara dua metode, yaitu Auto Regressive (AR) dan Moving Average (MA). I nya menjelaskan Integrated. 
+
+ - AR(p) : Auto Regressive 
+        Auto regressive di ARIMA artinya kita membuat model linear regression berdasarkan lag dari datanya sebagai prediktor.
+ - I(d) : Integrated
+        Integrated adalah berapa kali data dilakukan differencing untuk membuat suatu data stationer. Nilai d dapat diketahui dengan mencari tahu berapa kali differencing yang dilakukan pada data
+ - MA(q) : Moving Average
+        Moving Average dalam ARIMA artinya kita melakukan rata-rata berjalan terhadap data time series itu sendiri
+
+Syarat agar data dapat diolah menggunakan ARIMA adalah data harus bersifat stasioner. Stasioner dalam time series memiliki arti bahwa pada data time series yang kita miliki tidak memiliki trend maupun seasonal dan berfluktuasi disekitar mean nya. Dalam mengetahui apakah data kita sudah stasioner atau belum kita dapat melakukan uji asumsi dengan fungsi adf.test()
+
+### Integrated
+
+```{r}
+migration_train %>% adf.test()
+```
+
+Dari data di atas nilai p-value lebih besar dari 0.05 maka sudah stasioner
+
+### AR(p) dan MA(q)
+
+Untuk mencari nilai p dan q maka bisa kit alihat dengan plot di bawah ini:
+
+```{r}
+migration_train %>% tsdisplay()
+```
+
+Dari plot di atas bisa kita lihat untuk mencari nilai p maka kita lihat plot di PACF yang melewati garis biru. dan untuk mencari nilai q maka kita lihat plot di ACF yang melewati gari biru. maksimal nilai p dan q yang kita ambil adalah 5
+
+ - p: 0,1,2,5
+ - d: 2
+ - q: 0,1,2,3,4,5
+
+calon model
+
+- c(0,2,0)
+- c(0,2,1)
+- c(0,2,2)
+- c(0,2,3)
+- c(0,2,4)
+- c(0,2,5)
+- c(1,2,0)
+- c(1,2,1)
+- c(1,2,2)
+- c(1,2,3)
+- c(1,2,4)
+- c(1,2,5)
+- c(2,2,0)
+- c(2,2,1)
+- c(2,2,2)
+- c(2,2,3)
+- c(2,2,4)
+- c(2,2,5)
+- c(5,2,0)
+- c(5,2,1)
+- c(5,2,2)
+- c(5,2,3)
+- c(5,2,4)
+- c(5,2,5)
+
+```{r}
+model_020 <- Arima(y = migration_train,order = c(0,2,0))
+model_021 <- Arima(y = migration_train,order = c(0,2,1))
+model_022 <- Arima(y = migration_train,order = c(0,2,2))
+model_023 <- Arima(y = migration_train,order = c(0,2,3))
+model_024 <- Arima(y = migration_train,order = c(0,2,4))
+model_025 <- Arima(y = migration_train,order = c(0,2,5))
+model_120 <- Arima(y = migration_train,order = c(1,2,0))
+model_121 <- Arima(y = migration_train,order = c(1,2,1))
+model_122 <- Arima(y = migration_train,order = c(1,2,2))
+model_123 <- Arima(y = migration_train,order = c(1,2,3))
+model_124 <- Arima(y = migration_train,order = c(1,2,4))
+model_125 <- Arima(y = migration_train,order = c(1,2,5))
+model_220 <- Arima(y = migration_train,order = c(2,2,0))
+model_221 <- Arima(y = migration_train,order = c(2,2,1))
+model_222 <- Arima(y = migration_train,order = c(2,2,2))
+model_223 <- Arima(y = migration_train,order = c(2,2,3))
+model_224 <- Arima(y = migration_train,order = c(2,2,4))
+model_225 <- Arima(y = migration_train,order = c(2,2,5))
+model_520 <- Arima(y = migration_train,order = c(5,2,0))
+model_521 <- Arima(y = migration_train,order = c(5,2,1))
+model_522 <- Arima(y = migration_train,order = c(5,2,2))
+model_523 <- Arima(y = migration_train,order = c(5,2,3))
+model_524 <- Arima(y = migration_train,order = c(5,2,4))
+model_525 <- Arima(y = migration_train,order = c(5,2,5))
+model_autoarima <- auto.arima(migration_train)
+```
+
+### Goodness of fit
+
+Untuk pemilihan model terbaik, kita bisa gunakan nilai AIC. Ingat: Nilai AIC yaitu information loss -> sehingga nilai yang terkecil yang diinginkan. dapat dilakukan dengan cara nama_model$aic
+
+```{r}
+model_020$aic
+model_021$aic
+model_022$aic
+model_023$aic
+model_024$aic
+model_025$aic
+model_120$aic
+model_121$aic
+model_122$aic
+model_123$aic
+model_124$aic
+model_125$aic
+model_220$aic
+model_221$aic
+model_222$aic
+model_223$aic
+model_224$aic
+model_225$aic
+model_520$aic
+model_521$aic
+model_522$aic
+model_523$aic
+model_524$aic
+model_525$aic
+model_autoarima$aic
+```
+
+model terbaik dari arima adalah:
+
+- model_auto 
+- model_525
+- model_524
+
+### Forecasting Arima
+
+Melakukan forecast untuk 12 bulan mendatang
+
+```{r}
+forecast_auto <- forecast(model_autoarima, h = 12)
+forecast_525 <- forecast(model_525, h = 12)
+forecast_524 <- forecast(model_524, h = 12)
+```
+
+### Accuracy Arima
+
+kita akan lakukan evaluasi model dengan menggunakan fungsi accuracy() dari model terbaik
+
+```{r}
+accuracy(forecast_auto$mean, migration_test)
+accuracy(forecast_525$mean, migration_test)
+accuracy(forecast_524$mean, migration_test)
+```
+
+Dari evaluasi Arima di atas model_525 memiliki MAPE terkecil dari model terbaik kita
+
+### Assumption
+
+Asumsi pada time series diujikan untuk mengukur apakah residual yang peroleh dari hasil modeling sudah cukup baik untuk menggambarkan dan menangkap informasi pada data. Di bawah ini asumsi untuk mengujinya:
+
+#### Normality of residual
+
+Untuk mengecek normality residual pada hasil forecasting time series kita bisa melakukan uji normality (shapiro test) dengan menggunakan fungsi shapiro.test(residual model). 
+
+```{r}
+hist(model_525$residuals)
+```
+
+Dari histogram di atas bahwa plot membentuk kuva terlihat normal. untuk meyakinkannya kita bisa menggunakan shapiro.test
+
+```{r}
+shapiro.test(model_525$residuals)
+```
+
+setelah di lakukan shapiro test di peroleh pvalue libih kecil dari 0.05, maka residual model 525 tersebar tidak secara normal (jika di rubah residual secara normal maka lakukan seperti regresi)
+
+#### No-autocorrelation residual
+
+Untuk mengecek ada/tidaknya autokorelasi pada hasil forecasting time series bisa menggunakan uji Ljung-box dengan menggunakan fungsi Box.test(residual model, type = "Ljung-Box) yang akan menghasilkan sebuah nilai p-value. Hipotesis yang digunakan yaitu:
+
+H0: residual has no-autocorrelation 
+
+H1: residual has autocorrelation
+
+yang diinginkan p-value > 0.05 (alpha), no-autocorrelation
+
+```{r}
+Box.test(model_525$residuals, type = "Ljung-Box")
+```
+
+Insight: 
+
+- di peroleh p value lebih besar dari 0.05, maka residual dari model 525 tidak terjadi autokorelasi
+
+## STLM
+
+Adalah salah satu cara untuk mendapatkan decompose data namun tetap mempertahankan informasi dari seluruh data yang kita miliki. Dengan menggunakan informasi data train, kita akan coba untuk membuat model dengan menggunakan stlm(). Beberapa parameter model: 
+
+ - y : object time series
+ 
+ - s.window : pola seasonal yang ingin ditangkap (nilai frequency pada fungsi ts())
+ 
+ - method: "arima"
+
+
+```{r}
+model_stlm <- stlm(y = migration_train,
+                   s.window = 12,
+                   method = "arima")
+```
+
+# Forecasting
+
+Melakukan forecast untuk 12 bulan mendatang
+
+```{r}
+model_hw_forecast <- forecast(model_hw, h = 12)
+forecast_stlm <- forecast(model_stlm, h = 12)
+```
+
+Visualisasi hasil forecast
+
+```{r}
+migration_ts %>% 
+  autoplot()+
+  autolayer(model_hw_forecast$mean, series = "model hw")+
+  autolayer(forecast_auto$mean, series = " model auto")+
+  autolayer(forecast_525$mean, series = "model 525")+
+  autolayer(forecast_524$mean, series = "model 524")+
+  autolayer(forecast_stlm$mean, series = "model stlm")
+```
+
+# Evaluation
+
+Melakukan evaluasi antar model dengan menggunakan fungsi MAPE() dari package MLmetrics
+
+```{r}
+accuracy(model_hw_forecast$mean, migration_test)
+accuracy(forecast_525$mean, migration_test)
+accuracy(forecast_stlm$mean, migration_test)
+```
+
+Dari evaluasi di atas dengan prosentase MAPE antara data test, maka model_hw adalah model terbaik kita.
+
+# Conclusion
+
+Dengan MAPE 13.86353 maka model_hw adalah model terbaik untuk memprediksi migration selama 12 bulan dari data test kita
+
+# Reference
+
+ - https://www.stats.govt.nz/large-datasets/csv-files-for-download/
+ - https://www.suara.com/lifestyle/2021/10/21/222812/fakta-unik-new-zealand-masyarakatnya-utamakan-gaya-hidup-sehat
+
+
+
+
+
+
+
+
+
+
